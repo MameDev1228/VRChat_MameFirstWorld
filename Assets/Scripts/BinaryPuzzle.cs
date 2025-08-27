@@ -9,11 +9,10 @@ using VRC.Udon;
 /// 制作者: Mame_Dev
 /// 
 /// VRChat用ファーストステージの二進数→十進数パズルスクリプト
-/// プレイヤーは端末に表示された二進数を10進数に変換し、正しい数字を入力することで
-/// ドアが開く仕組みになっています。
-/// 
+/// プレイヤーは端末に表示された二進数を10進数に変換し、正しい数字を入力すると
+/// ドアが開く協力プレイ向けマルチ対応版
 /// </summary>
-[UdonBehaviourSyncMode(BehaviourSyncMode.None)]
+[UdonBehaviourSyncMode(BehaviourSyncMode.Manual)]
 public class BinaryPuzzle : UdonSharpBehaviour
 {
     [Header("ドアオブジェクト")]
@@ -23,8 +22,9 @@ public class BinaryPuzzle : UdonSharpBehaviour
     [Header("端末オブジェクト")]
     public GameObject terminalDisplay; // 端末表示用のテキストオブジェクト（TextMeshProなど推奨）
 
-    private string binaryCode; // 現在の二進数コード
-    private int decimalAnswer; // 二進数を10進数に変換した正解
+    [UdonSynced] private string binaryCode;   // 同期される二進数コード
+    [UdonSynced] private int decimalAnswer;   // 同期される正解値
+    [UdonSynced] private bool doorOpened;     // ドアの開閉状態を同期
 
     void Start()
     {
@@ -38,28 +38,16 @@ public class BinaryPuzzle : UdonSharpBehaviour
             }
         }
 
-        // 最初の二進数コードを生成（8桁）
-        binaryCode = GenerateBinaryCode(8);
-        decimalAnswer = BinaryToDecimal(binaryCode); // 自前関数で変換
-
-        // -------------------------
-        // 二進数→10進数変換関数
-        int BinaryToDecimal(string binary)
+        // マスタークライアントだけがコード生成
+        if (Networking.IsMaster)
         {
-            int result = 0;
-            for (int i = 0; i < binary.Length; i++)
-            {
-                // 左から桁を読む
-                if (binary[i] == '1')
-                {
-                    // 2^(桁の位置)を足す
-                    result += 1 << (binary.Length - i - 1);
-                }
-            }
-            return result;
+            binaryCode = GenerateBinaryCode(8);       // 8桁の二進数
+            decimalAnswer = BinaryToDecimal(binaryCode); // 自前関数で変換
+            doorOpened = false;
+            RequestSerialization(); // 全員に同期
         }
 
-        // 端末にコードを表示
+        // 端末表示を初期化
         UpdateTerminalDisplay(binaryCode);
     }
 
@@ -71,15 +59,14 @@ public class BinaryPuzzle : UdonSharpBehaviour
     {
         if (int.TryParse(playerInput, out int inputNumber))
         {
-            if (inputNumber == decimalAnswer)
+            if (inputNumber == decimalAnswer && !doorOpened)
             {
-                // 正解
+                // 正解したプレイヤーがドアを開く
                 OpenDoor();
                 ShowMessage("正解です！ドアが開きました！");
             }
-            else
+            else if (!doorOpened)
             {
-                // 不正解
                 ShowMessage("違います…もう一度計算してみてください！");
             }
         }
@@ -95,10 +82,30 @@ public class BinaryPuzzle : UdonSharpBehaviour
     /// </summary>
     private void OpenDoor()
     {
-        if (doorAnimator != null)
+        if (!doorOpened)
         {
-            doorAnimator.SetTrigger("Open"); // AnimatorにOpenトリガーを送信
+            doorOpened = true;
+            if (doorAnimator != null)
+            {
+                doorAnimator.SetTrigger("Open");
+            }
+            RequestSerialization(); // 全員に同期
         }
+    }
+
+    /// <summary>
+    /// 他プレイヤーから同期情報が届いたとき
+    /// </summary>
+    public override void OnDeserialization()
+    {
+        // ドア状態を反映
+        if (doorOpened && doorAnimator != null)
+        {
+            doorAnimator.SetTrigger("Open");
+        }
+
+        // 端末表示を同期
+        UpdateTerminalDisplay(binaryCode);
     }
 
     /// <summary>
@@ -118,7 +125,7 @@ public class BinaryPuzzle : UdonSharpBehaviour
     }
 
     /// <summary>
-    /// 4桁のランダム二進数を生成
+    /// 指定桁数のランダム二進数を生成
     /// </summary>
     /// <param name="length">桁数</param>
     /// <returns>二進数文字列</returns>
@@ -128,6 +135,24 @@ public class BinaryPuzzle : UdonSharpBehaviour
         for (int i = 0; i < length; i++)
         {
             result += Random.Range(0, 2).ToString();
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 二進数文字列を10進数に変換
+    /// </summary>
+    /// <param name="binary">二進数文字列</param>
+    /// <returns>10進数値</returns>
+    private int BinaryToDecimal(string binary)
+    {
+        int result = 0;
+        for (int i = 0; i < binary.Length; i++)
+        {
+            if (binary[i] == '1')
+            {
+                result += 1 << (binary.Length - i - 1);
+            }
         }
         return result;
     }
